@@ -8,10 +8,12 @@ to geoalpha.pipeline_runs at the end of each execution.
 """
 
 import os
+import time
 from datetime import datetime, timezone, timedelta
 
 from dotenv import load_dotenv
 from gdeltdoc import GdeltDoc, Filters
+from gdeltdoc.errors import RateLimitError
 from pymongo import MongoClient, ASCENDING
 
 # ---------------------------------------------------------------------------
@@ -26,10 +28,26 @@ ARTICLES_COL  = "gdelt_articles"
 RUNS_COL      = "pipeline_runs"
 
 # Keywords to query — extend this list to add more signals
-KEYWORDS = ["Russia sanctions"]
+KEYWORDS = [
+    "Russia sanctions",
+    "Strait of Hormuz tanker",
+    "Red Sea shipping attack",
+    "Suez Canal blocked",
+    "South China Sea vessel",
+    "Arctic shipping route",
+    "Black Sea grain ship",
+    "shipping lane disruption",
+]
 
 # GDELT lookback window (days)
 LOOKBACK_DAYS = 7
+
+# Seconds to wait between keyword requests (GDELT enforces a per-minute rate limit)
+REQUEST_DELAY_SECONDS = 15
+
+# Retry config for 429 rate-limit responses
+RETRY_MAX_ATTEMPTS = 5
+RETRY_BACKOFF_SECONDS = 30  # doubles on each attempt: 30, 60, 120, 240
 
 
 # ---------------------------------------------------------------------------
@@ -44,18 +62,29 @@ def build_run_id() -> str:
 def fetch_articles(keyword: str, timespan_days: int) -> list[dict]:
     """
     Query GDELT DOC 2.0 for articles matching *keyword* within the
-    last *timespan_days* days.  Returns a list of article dicts.
+    last *timespan_days* days.  Retries with exponential backoff on
+    429 rate-limit responses.  Returns a list of article dicts.
     """
     gd = GdeltDoc()
     filters = Filters(
         keyword=keyword,
         timespan=f"{timespan_days}d",
     )
-    # articles() returns a pandas DataFrame; convert to records for easy handling
-    df = gd.article_search(filters)
-    if df is None or df.empty:
-        return []
-    return df.to_dict(orient="records")
+
+    wait = RETRY_BACKOFF_SECONDS
+    for attempt in range(1, RETRY_MAX_ATTEMPTS + 1):
+        try:
+            # article_search returns a pandas DataFrame; convert to records
+            df = gd.article_search(filters)
+            if df is None or df.empty:
+                return []
+            return df.to_dict(orient="records")
+        except RateLimitError:
+            if attempt == RETRY_MAX_ATTEMPTS:
+                raise  # exhausted retries — let caller handle it
+            print(f"  Rate limited (attempt {attempt}/{RETRY_MAX_ATTEMPTS}), waiting {wait}s before retry...")
+            time.sleep(wait)
+            wait *= 2  # exponential backoff: 30 → 60 → 120 → 240
 
 
 def parse_seendate(raw: str | None) -> datetime | None:
@@ -117,13 +146,21 @@ def main() -> None:
     total_inserted = 0
     errors: list[str] = []
 
-    for keyword in KEYWORDS:
+    for i, keyword in enumerate(KEYWORDS):
+        # GDELT DOC API enforces a ~5 second rate limit between requests
+        if i > 0:
+            time.sleep(REQUEST_DELAY_SECONDS)
+
         print(f"[{run_id}] Querying GDELT for: '{keyword}' (last {LOOKBACK_DAYS} days)")
 
         try:
             raw_articles = fetch_articles(keyword, LOOKBACK_DAYS)
         except Exception as exc:
-            msg = f"GDELT fetch failed for '{keyword}': {exc}"
+            # Include exception type and HTTP status code (if present) so we can
+            # distinguish rate limit (429) from bad request (400) from other errors
+            status = getattr(getattr(exc, "response", None), "status_code", None)
+            status_str = f" [HTTP {status}]" if status else ""
+            msg = f"GDELT fetch failed for '{keyword}': {type(exc).__name__}{status_str}: {exc}"
             print(f"  ERROR: {msg}")
             errors.append(msg)
             continue
