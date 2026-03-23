@@ -27,3 +27,12 @@ enriches it with NLP, and surfaces signals correlated with market movements.
 - /ingest_gdelt.py — GDELT ingestion script
 - /requirements.txt
 - /.env — never commit this
+
+## Future Phase — Shipping Intelligence Layer
+- AIS vessel tracking data for key chokepoints
+  (Hormuz, Red Sea, Suez, South China Sea, Arctic)
+- Baltic Dry Index and Freightos Baltic Index via yfinance
+- Sea ice extent data from NSIDC for Arctic routes
+- New collection: `shipping_signals`
+- Hypothesis: shipping lane anomalies mediate between 
+  geopolitical sentiment and commodity price movements
