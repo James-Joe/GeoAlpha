@@ -35,3 +35,22 @@ enriches it with NLP, and surfaces signals correlated with market movements.
 - New collection: `shipping_signals`
 - Hypothesis: shipping lane anomalies mediate between 
   geopolitical sentiment and commodity price movements
+
+  ## Shipping Data Sources
+
+### Active
+- Baltic Dry Index and shipping indices via `yfinance`
+  - Tickers: BDI (Baltic Dry Index), plus shipping proxies
+  - Collection: `shipping_signals`
+  - Daily ingestion
+
+- GDELT shipping keywords (extension of existing gdelt collector)
+  - Additional keywords focused on maritime/shipping events
+  - Same collection as gdelt_articles: `gdelt_articles`
+  - Same pipeline_runs logging pattern
+
+### Pending
+- MarineTraffic AIS API (account registration in progress)
+  - Will track vessel counts through: Hormuz, Red Sea, 
+    Suez, South China Sea, Arctic
+  - Collection: `shipping_signals`
