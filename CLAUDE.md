@@ -7,13 +7,12 @@ enriches it with NLP, and surfaces signals correlated with market movements.
 - Python 3
 - MongoDB Atlas (pymongo)
 - GDELT DOC 2.0 API via gdeltdoc library
-- Reddit via PRAW (coming Month 2)
 - Prefect for orchestration (coming Month 2)
 - FinBERT/VADER for NLP enrichment (coming Month 3)
 
 ## Collections
 - `gdelt_articles` — raw ingested articles with sentiment fields null until enriched
-- `reddit_posts` — raw reddit posts (coming Month 2)
+- `rss_articles` — raw RSS feed articles with sentiment fields null until enriched
 - `pipeline_runs` — logs every pipeline execution
 
 ## Conventions
