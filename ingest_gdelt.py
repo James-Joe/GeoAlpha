@@ -58,6 +58,19 @@ def fetch_articles(keyword: str, timespan_days: int) -> list[dict]:
     return df.to_dict(orient="records")
 
 
+def parse_seendate(raw: str | None) -> datetime | None:
+    """
+    Convert a GDELT seendate string (e.g. '20260320T143000Z') to a UTC datetime.
+    Returns None if the value is missing or unparseable.
+    """
+    if not raw:
+        return None
+    try:
+        return datetime.strptime(raw, "%Y%m%dT%H%M%SZ").replace(tzinfo=timezone.utc)
+    except ValueError:
+        return None
+
+
 def build_document(article: dict, keyword: str, run_id: str) -> dict:
     """
     Map a raw GDELT article dict to the canonical MongoDB document shape.
@@ -71,7 +84,7 @@ def build_document(article: dict, keyword: str, run_id: str) -> dict:
         # Core GDELT fields (use .get() so missing fields become None gracefully)
         "url":                    article.get("url"),
         "title":                  article.get("title"),
-        "seendate":               article.get("seendate"),
+        "seendate":               parse_seendate(article.get("seendate")),
         "domain":                 article.get("domain"),
         "language":               article.get("language"),
         "sourcecountry":          article.get("sourcecountry"),
