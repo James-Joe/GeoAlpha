@@ -3,8 +3,14 @@ ingest_gdelt.py
 
 Pulls articles from the GDELT DOC 2.0 API for a set of keywords,
 deduplicates against MongoDB, and inserts new results into the
-geoalpha.gdelt_articles collection.  A summary run record is written
-to geoalpha.pipeline_runs at the end of each execution.
+geoalpha.gdelt_articles collection.
+
+Also runs a timelinetone query for each keyword and stores daily average
+tone readings in the geoalpha.gdelt_tone_timelines collection, deduplicated
+on (query_keyword, date).
+
+A summary run record is written to geoalpha.pipeline_runs at the end of
+each execution.
 """
 
 import os
@@ -26,6 +32,7 @@ load_dotenv()
 MONGODB_URI   = os.environ["MONGODB_URI"]
 DB_NAME       = "geoalpha"
 ARTICLES_COL  = "gdelt_articles"
+TONE_COL      = "gdelt_tone_timelines"
 RUNS_COL      = "pipeline_runs"
 
 # Keywords to query — extend this list to add more signals
@@ -100,6 +107,61 @@ def parse_seendate(raw: str | None) -> datetime | None:
         return None
 
 
+def fetch_tone_timeline(keyword: str, timespan_days: int) -> list[dict]:
+    """
+    Query GDELT DOC 2.0 for the daily average tone timeline matching *keyword*
+    within the last *timespan_days* days.  Retries with exponential backoff on
+    rate-limit and connection errors.
+
+    Returns a list of row dicts with keys 'datetime' (pandas Timestamp) and
+    'Average Tone' (float).  Returns an empty list when GDELT has no data.
+    """
+    gd = GdeltDoc()
+    filters = Filters(
+        keyword=keyword,
+        timespan=f"{timespan_days}d",
+    )
+
+    wait = RETRY_BACKOFF_SECONDS
+    for attempt in range(1, RETRY_MAX_ATTEMPTS + 1):
+        try:
+            df = gd.timeline_search("timelinetone", filters)
+            if df is None or df.empty:
+                return []
+            return df.to_dict(orient="records")
+        except (RateLimitError, requests.exceptions.ConnectionError, ConnectionError):
+            if attempt == RETRY_MAX_ATTEMPTS:
+                raise
+            print(f"  Network error (attempt {attempt}/{RETRY_MAX_ATTEMPTS}), waiting {wait}s before retry...")
+            time.sleep(wait)
+            wait *= 2
+
+
+def build_tone_document(row: dict, keyword: str, run_id: str) -> dict:
+    """
+    Map a single timelinetone DataFrame row to the canonical gdelt_tone_timelines
+    document shape.
+
+    GDELT returns the datetime as a pandas Timestamp and the tone series under
+    the column name 'Average Tone'.
+    """
+    # Convert pandas Timestamp to a timezone-aware Python datetime (UTC)
+    raw_dt = row["datetime"]
+    if hasattr(raw_dt, "to_pydatetime"):
+        raw_dt = raw_dt.to_pydatetime()
+    if raw_dt.tzinfo is None:
+        raw_dt = raw_dt.replace(tzinfo=timezone.utc)
+
+    return {
+        "source":          "gdelt_tone",
+        "query_keyword":   keyword,
+        "date":            raw_dt,
+        "tone_score":      float(row["Average Tone"]),
+        "ingested_at":     datetime.now(timezone.utc),
+        "pipeline_run_id": run_id,
+    }
+
+
 def build_document(article: dict, keyword: str, run_id: str) -> dict:
     """
     Map a raw GDELT article dict to the canonical MongoDB document shape.
@@ -138,11 +200,12 @@ def ingest_gdelt() -> dict:
     new articles, and writes a per-task record to pipeline_runs.
 
     Returns a result dict:
-        task     — "gdelt"
-        run_id   — pipeline run identifier (run_YYYYMMDD_HHMMSS)
-        inserted — total articles inserted this run
-        errors   — list of error strings encountered
-        status   — "success" | "partial" | "failed"
+        task              — "gdelt"
+        run_id            — pipeline run identifier (run_YYYYMMDD_HHMMSS)
+        inserted          — total articles inserted this run
+        tone_inserted     — total tone timeline rows inserted this run
+        errors            — list of error strings encountered
+        status            — "success" | "partial" | "failed"
     """
     run_id     = build_run_id()
     started_at = datetime.now(timezone.utc)
@@ -151,13 +214,22 @@ def ingest_gdelt() -> dict:
     db     = client[DB_NAME]
 
     articles_col = db[ARTICLES_COL]
+    tone_col     = db[TONE_COL]
     runs_col     = db[RUNS_COL]
 
-    # Ensure a unique index on URL so duplicate checks are fast
+    # Unique index on URL for fast deduplication of articles
     articles_col.create_index([("url", ASCENDING)], unique=True, background=True)
 
-    total_inserted = 0
-    errors: list[str] = []
+    # Compound unique index on (query_keyword, date) for tone deduplication
+    tone_col.create_index(
+        [("query_keyword", ASCENDING), ("date", ASCENDING)],
+        unique=True,
+        background=True,
+    )
+
+    total_inserted      = 0
+    total_tone_inserted = 0
+    errors: list[str]   = []
 
     for i, keyword in enumerate(KEYWORDS):
         # GDELT DOC API enforces a ~5 second rate limit between requests
@@ -166,6 +238,9 @@ def ingest_gdelt() -> dict:
 
         print(f"[{run_id}] Querying GDELT for: '{keyword}' (last {LOOKBACK_DAYS} days)")
 
+        # ------------------------------------------------------------------
+        # Article search
+        # ------------------------------------------------------------------
         try:
             raw_articles = fetch_articles(keyword, LOOKBACK_DAYS)
         except Exception as exc:
@@ -173,12 +248,16 @@ def ingest_gdelt() -> dict:
             # distinguish rate limit (429) from bad request (400) from other errors
             status = getattr(getattr(exc, "response", None), "status_code", None)
             status_str = f" [HTTP {status}]" if status else ""
-            msg = f"GDELT fetch failed for '{keyword}': {type(exc).__name__}{status_str}: {exc}"
+            msg = f"GDELT article fetch failed for '{keyword}': {type(exc).__name__}{status_str}: {exc}"
             print(f"  ERROR: {msg}")
             errors.append(msg)
-            continue
+            raw_articles = []
 
         print(f"  {len(raw_articles)} articles returned by GDELT")
+
+        if not raw_articles:
+            print(f"  No articles for '{keyword}' — skipping tone timeline query")
+            continue
 
         inserted_count = 0
         for article in raw_articles:
@@ -202,41 +281,85 @@ def ingest_gdelt() -> dict:
         print(f"  Inserted {inserted_count} new articles for '{keyword}'")
         total_inserted += inserted_count
 
+        # ------------------------------------------------------------------
+        # Tone timeline search — runs after article search, with its own
+        # rate-limit delay since it is a second API call for this keyword
+        # ------------------------------------------------------------------
+        time.sleep(REQUEST_DELAY_SECONDS)
+
+        print(f"[{run_id}] Querying GDELT tone timeline for: '{keyword}'")
+
+        try:
+            raw_tone_rows = fetch_tone_timeline(keyword, LOOKBACK_DAYS)
+        except Exception as exc:
+            status = getattr(getattr(exc, "response", None), "status_code", None)
+            status_str = f" [HTTP {status}]" if status else ""
+            msg = f"GDELT tone fetch failed for '{keyword}': {type(exc).__name__}{status_str}: {exc}"
+            print(f"  ERROR: {msg}")
+            errors.append(msg)
+            raw_tone_rows = []
+
+        print(f"  {len(raw_tone_rows)} tone data points returned by GDELT")
+
+        tone_inserted_count = 0
+        for row in raw_tone_rows:
+            doc = build_tone_document(row, keyword, run_id)
+
+            # Deduplication: skip if this (keyword, date) pair already exists
+            if tone_col.find_one(
+                {"query_keyword": keyword, "date": doc["date"]}, {"_id": 1}
+            ):
+                continue
+
+            try:
+                tone_col.insert_one(doc)
+                tone_inserted_count += 1
+            except Exception as exc:
+                msg = f"Tone insert failed for '{keyword}' on {doc['date']}: {exc}"
+                print(f"  ERROR: {msg}")
+                errors.append(msg)
+
+        print(f"  Inserted {tone_inserted_count} new tone rows for '{keyword}'")
+        total_tone_inserted += tone_inserted_count
+
     completed_at = datetime.now(timezone.utc)
 
     # Determine task-level status
     if not errors:
         task_status = "success"
-    elif total_inserted > 0:
+    elif total_inserted > 0 or total_tone_inserted > 0:
         task_status = "partial"
     else:
         task_status = "failed"
 
     # Write per-task pipeline run record (useful for standalone runs and debugging)
     run_record = {
-        "run_id":                  run_id,
-        "started_at":              started_at,
-        "completed_at":            completed_at,
-        "status":                  "completed" if not errors else "completed_with_errors",
-        "keywords_queried":        KEYWORDS,
-        "gdelt_articles_inserted": total_inserted,
-        "errors":                  errors,
+        "run_id":                       run_id,
+        "started_at":                   started_at,
+        "completed_at":                 completed_at,
+        "status":                       "completed" if not errors else "completed_with_errors",
+        "keywords_queried":             KEYWORDS,
+        "gdelt_articles_inserted":      total_inserted,
+        "gdelt_tone_rows_inserted":     total_tone_inserted,
+        "errors":                       errors,
     }
     runs_col.insert_one(run_record)
 
     print(
-        f"\n[{run_id}] Done — {total_inserted} articles inserted. "
+        f"\n[{run_id}] Done — {total_inserted} articles, "
+        f"{total_tone_inserted} tone rows inserted. "
         f"Status: {run_record['status']}"
     )
 
     client.close()
 
     return {
-        "task":     "gdelt",
-        "run_id":   run_id,
-        "inserted": total_inserted,
-        "errors":   errors,
-        "status":   task_status,
+        "task":          "gdelt",
+        "run_id":        run_id,
+        "inserted":      total_inserted,
+        "tone_inserted": total_tone_inserted,
+        "errors":        errors,
+        "status":        task_status,
     }
 
 
