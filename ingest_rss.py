@@ -107,7 +107,20 @@ def build_document(entry, feed_name: str, run_id: str) -> dict:
 # Main
 # ---------------------------------------------------------------------------
 
-def main() -> None:
+def ingest_rss() -> dict:
+    """
+    Execute the full RSS ingestion cycle.
+
+    Fetches every feed in FEEDS, deduplicates against MongoDB, inserts new
+    articles, and writes a per-task record to pipeline_runs.
+
+    Returns a result dict:
+        task     — "rss"
+        run_id   — pipeline run identifier (run_YYYYMMDD_HHMMSS)
+        inserted — total articles inserted this run
+        errors   — list of error strings encountered
+        status   — "success" | "partial" | "failed"
+    """
     run_id     = build_run_id()
     started_at = datetime.now(timezone.utc)
 
@@ -163,7 +176,15 @@ def main() -> None:
 
     completed_at = datetime.now(timezone.utc)
 
-    # Write pipeline run summary
+    # Determine task-level status
+    if not errors:
+        task_status = "success"
+    elif total_inserted > 0:
+        task_status = "partial"
+    else:
+        task_status = "failed"
+
+    # Write per-task pipeline run record (useful for standalone runs and debugging)
     run_record = {
         "run_id":                 run_id,
         "started_at":             started_at,
@@ -181,6 +202,19 @@ def main() -> None:
     )
 
     client.close()
+
+    return {
+        "task":     "rss",
+        "run_id":   run_id,
+        "inserted": total_inserted,
+        "errors":   errors,
+        "status":   task_status,
+    }
+
+
+def main() -> None:
+    """Standalone entrypoint — calls ingest_rss() directly."""
+    ingest_rss()
 
 
 if __name__ == "__main__":

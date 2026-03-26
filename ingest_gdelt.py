@@ -9,8 +9,9 @@ to geoalpha.pipeline_runs at the end of each execution.
 
 import os
 import time
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone
 
+import requests
 from dotenv import load_dotenv
 from gdeltdoc import GdeltDoc, Filters
 from gdeltdoc.errors import RateLimitError
@@ -32,7 +33,6 @@ KEYWORDS = [
     "Russia sanctions",
     "Strait of Hormuz tanker",
     "Red Sea shipping attack",
-    "Suez Canal blocked",
     "South China Sea vessel",
     "Arctic shipping route",
     "Black Sea grain ship",
@@ -79,10 +79,10 @@ def fetch_articles(keyword: str, timespan_days: int) -> list[dict]:
             if df is None or df.empty:
                 return []
             return df.to_dict(orient="records")
-        except RateLimitError:
+        except (RateLimitError, requests.exceptions.ConnectionError, ConnectionError):
             if attempt == RETRY_MAX_ATTEMPTS:
                 raise  # exhausted retries — let caller handle it
-            print(f"  Rate limited (attempt {attempt}/{RETRY_MAX_ATTEMPTS}), waiting {wait}s before retry...")
+            print(f"  Network error (attempt {attempt}/{RETRY_MAX_ATTEMPTS}), waiting {wait}s before retry...")
             time.sleep(wait)
             wait *= 2  # exponential backoff: 30 → 60 → 120 → 240
 
@@ -130,7 +130,20 @@ def build_document(article: dict, keyword: str, run_id: str) -> dict:
 # Main
 # ---------------------------------------------------------------------------
 
-def main() -> None:
+def ingest_gdelt() -> dict:
+    """
+    Execute the full GDELT ingestion cycle.
+
+    Queries every keyword in KEYWORDS, deduplicates against MongoDB, inserts
+    new articles, and writes a per-task record to pipeline_runs.
+
+    Returns a result dict:
+        task     — "gdelt"
+        run_id   — pipeline run identifier (run_YYYYMMDD_HHMMSS)
+        inserted — total articles inserted this run
+        errors   — list of error strings encountered
+        status   — "success" | "partial" | "failed"
+    """
     run_id     = build_run_id()
     started_at = datetime.now(timezone.utc)
 
@@ -191,7 +204,15 @@ def main() -> None:
 
     completed_at = datetime.now(timezone.utc)
 
-    # Write pipeline run summary
+    # Determine task-level status
+    if not errors:
+        task_status = "success"
+    elif total_inserted > 0:
+        task_status = "partial"
+    else:
+        task_status = "failed"
+
+    # Write per-task pipeline run record (useful for standalone runs and debugging)
     run_record = {
         "run_id":                  run_id,
         "started_at":              started_at,
@@ -209,6 +230,19 @@ def main() -> None:
     )
 
     client.close()
+
+    return {
+        "task":     "gdelt",
+        "run_id":   run_id,
+        "inserted": total_inserted,
+        "errors":   errors,
+        "status":   task_status,
+    }
+
+
+def main() -> None:
+    """Standalone entrypoint — calls ingest_gdelt() directly."""
+    ingest_gdelt()
 
 
 if __name__ == "__main__":

@@ -3,3 +3,4 @@ pymongo>=4.6.0
 python-dotenv>=1.0.0
 feedparser>=6.0.0
 yfinance>=0.2.0
+prefect>=2.14.0

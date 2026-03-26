@@ -28,7 +28,7 @@ RUNS_COL      = "pipeline_runs"
 
 # Tickers to ingest — each entry maps a symbol to a human-readable name
 TICKERS = [
-    {"symbol": "BDI",  "name": "Baltic Dry Index"},
+    # BDI (Baltic Dry Index) is not available on Yahoo Finance — use BDRY as proxy
     {"symbol": "BDRY", "name": "Breakwave Dry Bulk Shipping ETF"},
     {"symbol": "EDRY", "name": "Freightos Baltic Index Proxy"},
     {"symbol": "STNG", "name": "Scorpio Tankers"},
@@ -99,7 +99,21 @@ def build_document(row: dict, symbol: str, ticker_name: str, run_id: str) -> dic
 # Main
 # ---------------------------------------------------------------------------
 
-def main() -> None:
+def ingest_shipping() -> dict:
+    """
+    Execute the full yfinance shipping-signals ingestion cycle.
+
+    Downloads OHLCV history for every ticker in TICKERS, deduplicates
+    against MongoDB on (ticker, date), inserts new rows, and writes a
+    per-task record to pipeline_runs.
+
+    Returns a result dict:
+        task     — "shipping"
+        run_id   — pipeline run identifier (run_YYYYMMDD_HHMMSS)
+        inserted — total data points inserted this run
+        errors   — list of error strings encountered
+        status   — "success" | "partial" | "failed"
+    """
     run_id     = build_run_id()
     started_at = datetime.now(timezone.utc)
 
@@ -161,7 +175,15 @@ def main() -> None:
 
     completed_at = datetime.now(timezone.utc)
 
-    # Write pipeline run summary
+    # Determine task-level status
+    if not errors:
+        task_status = "success"
+    elif total_inserted > 0:
+        task_status = "partial"
+    else:
+        task_status = "failed"
+
+    # Write per-task pipeline run record (useful for standalone runs and debugging)
     run_record = {
         "run_id":           run_id,
         "started_at":       started_at,
@@ -179,6 +201,19 @@ def main() -> None:
     )
 
     client.close()
+
+    return {
+        "task":     "shipping",
+        "run_id":   run_id,
+        "inserted": total_inserted,
+        "errors":   errors,
+        "status":   task_status,
+    }
+
+
+def main() -> None:
+    """Standalone entrypoint — calls ingest_shipping() directly."""
+    ingest_shipping()
 
 
 if __name__ == "__main__":
