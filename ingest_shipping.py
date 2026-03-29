@@ -1,7 +1,7 @@
 """
 ingest_shipping.py
 
-Pulls daily maritime index and shipping proxy data from yfinance,
+Pulls daily crude futures and tanker stock data from yfinance,
 deduplicates against MongoDB on (ticker, date), and inserts new
 data points into the geoalpha.shipping_signals collection.  A summary
 run record is written to geoalpha.pipeline_runs at the end of each
@@ -28,11 +28,11 @@ RUNS_COL      = "pipeline_runs"
 
 # Tickers to ingest — each entry maps a symbol to a human-readable name
 TICKERS = [
-    # BDI (Baltic Dry Index) is not available on Yahoo Finance — use BDRY as proxy
-    {"symbol": "BDRY", "name": "Breakwave Dry Bulk Shipping ETF"},
-    {"symbol": "EDRY", "name": "Freightos Baltic Index Proxy"},
-    {"symbol": "STNG", "name": "Scorpio Tankers"},
+    {"symbol": "BZ=F", "name": "Brent Crude Futures"},
+    {"symbol": "CL=F", "name": "WTI Crude Futures"},
     {"symbol": "FRO",  "name": "Frontline (Crude Tanker)"},
+    {"symbol": "STNG", "name": "Scorpio Tankers"},
+    {"symbol": "USO",  "name": "US Oil ETF"},
 ]
 
 # How many calendar days of history to pull on each run

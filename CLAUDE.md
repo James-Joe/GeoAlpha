@@ -1,126 +1,257 @@
 # GeoAlpha
 
-A geopolitical sentiment pipeline that ingests news and social data, 
-enriches it with NLP, and surfaces signals correlated with market movements.
+A geopolitical sentiment pipeline that ingests news and shipping data,
+enriches it with NLP, and surfaces signals correlated with crude oil
+price movements driven by Middle East conflict and Hormuz disruption.
+
+---
+
+## Core Thesis — Hormuz Oil Signal
+
+**Hypothesis:** Negative sentiment around Middle East conflict and Iran
+tensions precedes rises in Brent Crude and WTI futures within a 48-72
+hour window, mediated by tanker traffic disruption through the Strait
+of Hormuz.
+
+**Signal chain:**
+```
+Middle East/Iran news sentiment (GDELT + RSS)
+        ↓
+Hormuz tanker disruption (AIS — future)
+        ↓
+Brent Crude (BZ=F) + WTI (CL=F) price movement
+        ↓
+Tanker operator stocks: FRO, STNG
+```
+
+---
 
 ## Stack
 - Python 3
 - MongoDB Atlas (pymongo)
 - GDELT DOC 2.0 API via gdeltdoc library
-- Prefect for orchestration (coming Month 2)
-- FinBERT/VADER for NLP enrichment (coming Month 3)
+- Prefect Cloud for orchestration (deployed, running daily at 6am UTC)
+- FinBERT/VADER for NLP enrichment (Month 3)
+- yfinance for shipping and commodity price signals
 
-## Collections
-- `gdelt_articles` — raw ingested articles with sentiment fields null until enriched
-- `gdelt_tone_timelines` — daily average GDELT tone per keyword; unique index on (query_keyword, date)
-- `rss_articles` — raw RSS feed articles with sentiment fields null until enriched
-- `pipeline_runs` — logs every pipeline execution
+---
+
+## Project Structure
+```
+/ingest_gdelt.py          — GDELT article + tone timeline ingestion
+/ingest_rss.py            — RSS feed ingestion with Hormuz relevance filter
+/ingest_shipping.py       — yfinance shipping and crude price signals
+/pipeline.py              — Prefect flow orchestrating all collectors
+/requirements.txt
+/.env                     — never commit this
+/CLAUDE.md
+/README.md
+```
+
+---
+
+## MongoDB Collections
+- `gdelt_articles` — GDELT articles, sentiment fields null until enriched
+- `gdelt_tone_timelines` — daily average GDELT tone per keyword;
+  unique index on (query_keyword, date)
+- `rss_articles` — RSS articles filtered for Hormuz relevance,
+  sentiment fields null until enriched
+- `shipping_signals` — daily yfinance price data for crude and tanker tickers
+- `pipeline_runs` — logs every pipeline execution with per-task results
+
+---
+
+## GDELT Keywords (Hormuz focused)
+```python
+KEYWORDS = [
+    "Strait of Hormuz",
+    "Iran sanctions",
+    "Iran nuclear",
+    "Persian Gulf tanker",
+    "Iran oil embargo",
+    "Gulf oil supply",
+    "Iran IRGC",
+    "Iran United States",
+    "Hormuz closure",
+    "Iran missile",
+]
+```
+
+---
+
+## RSS Feeds
+```python
+FEEDS = [
+    {"name": "Wall Street Journal",
+     "url": "https://feeds.a.dj.com/rss/RSSWorldNews.xml"},
+    {"name": "BBC World News",
+     "url": "http://feeds.bbci.co.uk/news/world/rss.xml"},
+    {"name": "Financial Times",
+     "url": "https://www.ft.com/rss/home/uk"},
+    {"name": "Al Jazeera",
+     "url": "https://www.aljazeera.com/xml/rss/all.xml"},
+]
+```
+
+**Relevance filter** — only articles containing these keywords are stored:
+```python
+HORMUZ_KEYWORDS = [
+    "iran", "hormuz", "persian gulf", "gulf oil",
+    "tanker", "crude oil", "irgc", "sanctions", "opec"
+]
+```
+
+Each stored document includes an `is_relevant: True` boolean field.
+
+---
+
+## Tickers (yfinance)
+```python
+TICKERS = [
+    {"symbol": "BZ=F",  "name": "Brent Crude Futures"},
+    {"symbol": "CL=F",  "name": "WTI Crude Futures"},
+    {"symbol": "FRO",   "name": "Frontline (Crude Tanker)"},
+    {"symbol": "STNG",  "name": "Scorpio Tankers"},
+    {"symbol": "USO",   "name": "US Oil ETF"},
+]
+```
+
+---
 
 ## Conventions
-- All timestamps in UTC
+- All timestamps stored as proper UTC datetime objects, never strings
 - Environment variables loaded from .env via python-dotenv
 - pipeline_run_id format: run_YYYYMMDD_HHMMSS
-- Never insert duplicate URLs — check before insert, unique index as safety net
-- Keep code well commented
+- Deduplication: find_one check before insert + unique index on url
+- All timestamps in UTC
+- Code should be clean and well commented
+- Sentiment fields default to null at ingestion, enriched in Month 3
 
-## Project structure
-- /ingest_gdelt.py — GDELT ingestion script
-- /requirements.txt
-- /.env — never commit this
+---
 
-## Future Phase — Shipping Intelligence Layer
-- AIS vessel tracking data for key chokepoints
-  (Hormuz, Red Sea, Suez, South China Sea, Arctic)
-- Baltic Dry Index and Freightos Baltic Index via yfinance
-- Sea ice extent data from NSIDC for Arctic routes
-- New collection: `shipping_signals`
-- Hypothesis: shipping lane anomalies mediate between 
-  geopolitical sentiment and commodity price movements
+## Sentiment Enrichment Approach (Month 3)
+- VADER for RSS articles — works well on short headline text
+- FinBERT for GDELT articles — financially aware model for geopolitical news
+- Both models run on the **title field** — avoids scraping complexity,
+  captures 80-90% of sentiment signal
+- Fallback: use summary field if title is empty (RSS articles)
+- Validation: compare FinBERT scores against gdelt_tone_timelines baseline
+  — significant divergence warrants investigation
 
-  ## Shipping Data Sources
+---
 
-### Active
-- Baltic Dry Index and shipping indices via `yfinance`
-  - Tickers: BDI (Baltic Dry Index), plus shipping proxies
-  - Collection: `shipping_signals`
-  - Daily ingestion
+## Prefect Deployment
+- Flow: `geoalpha_daily_ingestion` in `pipeline.py`
+- All four collectors run in parallel via `.submit()` and `wait()`
+- Each task has `retries=2`, `retry_delay_seconds=30`
+- Schedule: `0 6 * * *` (6am UTC daily)
+- Credentials stored as Prefect Secret blocks, not in .env
 
-- GDELT shipping keywords (extension of existing gdelt collector)
-  - Additional keywords focused on maritime/shipping events
-  - Same collection as gdelt_articles: `gdelt_articles`
-  - Same pipeline_runs logging pattern
+**Useful commands:**
+```bash
+# Deploy
+uvx prefect-cloud deploy pipeline.py:geoalpha_daily_ingestion \
+    --from James-Joe/GeoAlpha \
+    --name geoalpha-daily \
+    --with-requirements requirements.txt \
+    --secret MONGODB_URI=your_connection_string
 
-### Pending
-- MarineTraffic AIS API (account registration in progress)
-  - Will track vessel counts through: Hormuz, Red Sea, 
-    Suez, South China Sea, Arctic
-  - Collection: `shipping_signals`
+# Schedule
+uvx prefect-cloud schedule geoalpha_daily_ingestion/geoalpha-daily "0 6 * * *"
 
-  ## Future Research Directions
+# Run manually
+uvx prefect-cloud run geoalpha_daily_ingestion/geoalpha-daily
 
-### Shadow Fleet Tracking
-The shadow fleet is a collection of tankers that operate outside normal 
-international shipping to evade sanctions — primarily moving Russian, 
-Iranian, and Venezuelan oil to buyers in India, China, and Turkey.
+# Remove schedule
+uvx prefect-cloud unschedule geoalpha_daily_ingestion/geoalpha-daily
+```
 
-**Why it matters for GeoAlpha:**
-Shadow fleet disruptions affect legitimate tanker stocks (FRO, STNG) 
-and oil prices. When seizures or sanctions tightening reduce illicit 
-supply, legitimate tanker rates rise.
+---
 
-**Hypothesis:**
-When shadow fleet news sentiment spikes negatively (seizures, sanctions 
-tightening), do FRO and STNG rise within 48 hours as markets price in 
-reduced illicit supply?
+## GDELT BigQuery (Future Enhancement)
 
-**Already partially tracked via existing keywords.**
-Add these to GDELT collector to make it explicit:
-- "shadow fleet tanker"
-- "sanctions evasion ship"
-- "AIS dark vessel"
-- "ship to ship transfer sanctions"
-- "Russian oil tanker seized"
+The DOC 2.0 API caps results at 250 articles and returns 8 fields.
+GDELT's full dataset is available free via Google BigQuery — far richer.
 
-**Future enhancement — AIS gap detection:**
-Vessels that disable AIS transponders ("going dark") are a signal in 
-themselves. Cross-referencing AIS gaps with satellite imagery identifies 
-shadow fleet movements. Requires paid AIS provider or satellite imagery 
-API — beyond current free tier but worth revisiting.
+**Three tables updated every 15 minutes:**
+- `gdelt-bq.gdeltv2.events` — structured CAMEO events, Goldstein Scale,
+  Actor1/Actor2 codes, geolocation
+- `gdelt-bq.gdeltv2.mentions` — every article mentioning an event
+- `gdelt-bq.gdeltv2.gkg` — per-article themes, named entities,
+  full 7-dimension tone vector
 
-### Arctic Shipping & Greenland
-As Arctic ice retreats the Northern Sea Route between Europe and Asia 
-becomes commercially viable, cutting Rotterdam-Shanghai journey by ~40%. 
-US interest in Greenland is directly related to controlling Arctic 
-chokepoints.
+**Why it matters:** Goldstein scores (pre-computed conflict signal),
+CAMEO codes (structured event classification), no 250-article cap,
+full tone vector vs single average tone from DOC API.
 
-**Hypothesis:**
-Does Arctic shipping sentiment lead Baltic Dry Index movements as 
-northern routes become commercially relevant?
+**Access:** Google Cloud account required (free). 1TB free query
+scans/month — a single GDELT query typically scans a few GB.
 
-**Data source to add:**
-Sea ice extent data from NSIDC (National Snow and Ice Data Center) — 
-free, no API key required. Correlate ice extent with Arctic shipping 
-news sentiment and BDI movements.
+---
+
+## Future Research Directions
 
 ### AIS Chokepoint Monitoring
-Once a paid AIS provider is in place (Datalastic or AISHub), track 
-daily vessel counts through:
-- Strait of Hormuz (oil tankers → crude prices)
-- Red Sea / Suez Canal (container ships → goods inflation)
-- South China Sea (broad trade flow indicator)
-- Arctic routes (emerging — correlate with ice extent data)
+Track daily vessel counts through Strait of Hormuz as the mediating
+variable between sentiment and crude price movement.
 
-**Collection:** `shipping_signals` (already created)
+Provider options: Datalastic, AISHub (community-based, free with
+data sharing), VesselFinder.
 
-## Future Technical Enhancements
+Collection: `shipping_signals` (already exists)
 
-### Rust Scraping Layer (Future)
-If article volume scales beyond ~1000/day, consider 
-replacing Python scraper with Rust implementation using:
-- `reqwest` for async HTTP
-- `scraper` for HTML parsing  
-- `tokio` for concurrency
+### Shadow Fleet Tracking
+Shadow tankers move Iranian and Russian oil outside the sanctions
+regime. When seizures or sanctions tightening reduce illicit supply,
+legitimate tanker rates and crude prices rise.
 
-Current approach (Python + trafilatura with title fallback) 
-is sufficient for current scale. Revisit when enrichment 
-pipeline becomes a bottleneck.
+**Hypothesis:** Negative shadow fleet news sentiment predicts FRO
+and STNG price rises within 48 hours.
+
+Keywords to add when ready:
+```python
+"shadow fleet tanker",
+"sanctions evasion ship",
+"AIS dark vessel",
+"ship to ship transfer sanctions",
+"Iranian oil tanker seized"
+```
+
+Future: AIS gap detection (vessels going dark) via satellite
+imagery cross-referencing — requires paid provider.
+
+### Rust Scraping Layer
+If article volume scales beyond ~1,000/day, consider replacing
+Python scraper with Rust implementation using `reqwest`, `scraper`,
+and `tokio`. Current Python + title-only approach is sufficient
+at current scale.
+
+### Thesis 2 — Black Sea Grain Signal (future)
+```
+Russia Ukraine conflict sentiment
+        ↓
+Black Sea shipping disruption
+        ↓
+Wheat futures (ZW=F) + Corn futures (ZC=F)
+        ↓
+Dry bulk shipping rates (BDRY)
+```
+
+### Thesis 3 — Red Sea Container Signal (future)
+```
+Houthi attack sentiment
+        ↓
+Red Sea / Suez disruption
+        ↓
+Container shipping rates
+        ↓
+Inflation expectations
+```
+
+---
+
+## Out of Scope for Now
+- Reddit/PRAW (API access too restrictive)
+- MarineTraffic API (enterprise pricing only since Kpler acquisition)
+- Arctic routes / Greenland (Thesis 4 — future)
+- NSIDC sea ice data (revisit with Arctic thesis)

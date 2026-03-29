@@ -35,15 +35,18 @@ ARTICLES_COL  = "gdelt_articles"
 TONE_COL      = "gdelt_tone_timelines"
 RUNS_COL      = "pipeline_runs"
 
-# Keywords to query — extend this list to add more signals
+# Keywords to query — Hormuz oil signal thesis
 KEYWORDS = [
-    "Russia sanctions",
-    "Strait of Hormuz tanker",
-    "Red Sea shipping attack",
-    "South China Sea vessel",
-    "Arctic shipping route",
-    "Black Sea grain ship",
-    "shipping lane disruption",
+    "Strait of Hormuz",
+    "Iran sanctions",
+    "Iran nuclear",
+    "Persian Gulf tanker",
+    "Iran oil embargo",
+    "Gulf oil supply",
+    "Iran IRGC",
+    "Iran United States",
+    "Hormuz closure",
+    "Iran missile",
 ]
 
 # GDELT lookback window (days)

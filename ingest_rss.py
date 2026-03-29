@@ -34,6 +34,13 @@ FEEDS = [
     {"name": "Al Jazeera",         "url": "https://www.aljazeera.com/xml/rss/all.xml"},
 ]
 
+# Only articles whose title or summary contain at least one of these keywords
+# (case-insensitive) are stored.  All stored documents carry is_relevant: True.
+HORMUZ_KEYWORDS = [
+    "iran", "hormuz", "persian gulf", "gulf oil",
+    "tanker", "crude oil", "irgc", "sanctions", "opec",
+]
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -65,6 +72,15 @@ def parse_published_at(entry) -> datetime | None:
     return datetime(*time_struct[:6], tzinfo=timezone.utc)
 
 
+def is_hormuz_relevant(entry) -> bool:
+    """
+    Return True if the entry's title or summary contains at least one
+    keyword from HORMUZ_KEYWORDS (case-insensitive).
+    """
+    text = " ".join(filter(None, [entry.get("title"), entry.get("summary")])).lower()
+    return any(kw in text for kw in HORMUZ_KEYWORDS)
+
+
 def fetch_feed(feed_url: str) -> list:
     """
     Download and parse an RSS feed.  Returns the list of entries on
@@ -94,6 +110,8 @@ def build_document(entry, feed_name: str, run_id: str) -> dict:
         "url":                    url,
         "published_at":           parse_published_at(entry),
         "domain":                 extract_domain(url),
+        # Relevance — True for all stored documents (irrelevant articles are not stored)
+        "is_relevant":            True,
         # Sentiment — populated by the NLP enrichment stage
         "sentiment_score":        None,
         "sentiment_label":        None,
@@ -134,6 +152,7 @@ def ingest_rss() -> dict:
     articles_col.create_index([("url", ASCENDING)], unique=True, background=True)
 
     total_inserted = 0
+    total_skipped  = 0   # entries filtered out as irrelevant
     errors: list[str] = []
 
     for feed in FEEDS:
@@ -153,10 +172,16 @@ def ingest_rss() -> dict:
         print(f"  {len(entries)} entries returned")
 
         inserted_count = 0
+        skipped_count  = 0
         for entry in entries:
             url = entry.get("link")
             if not url:
                 continue  # skip malformed entries with no URL
+
+            # Relevance filter — only store Hormuz-related articles
+            if not is_hormuz_relevant(entry):
+                skipped_count += 1
+                continue
 
             # Deduplication: skip if this URL is already in the collection
             if articles_col.find_one({"url": url}, {"_id": 1}):
@@ -171,7 +196,8 @@ def ingest_rss() -> dict:
                 print(f"  ERROR: {msg}")
                 errors.append(msg)
 
-        print(f"  Inserted {inserted_count} new articles from '{feed_name}'")
+        print(f"  Inserted {inserted_count} new articles from '{feed_name}' ({skipped_count} filtered as irrelevant)")
+        total_skipped += skipped_count
         total_inserted += inserted_count
 
     completed_at = datetime.now(timezone.utc)
@@ -186,18 +212,20 @@ def ingest_rss() -> dict:
 
     # Write per-task pipeline run record (useful for standalone runs and debugging)
     run_record = {
-        "run_id":                 run_id,
-        "started_at":             started_at,
-        "completed_at":           completed_at,
-        "status":                 "completed" if not errors else "completed_with_errors",
-        "feeds_queried":          [f["name"] for f in FEEDS],
-        "rss_articles_inserted":  total_inserted,
-        "errors":                 errors,
+        "run_id":                       run_id,
+        "started_at":                   started_at,
+        "completed_at":                 completed_at,
+        "status":                       "completed" if not errors else "completed_with_errors",
+        "feeds_queried":                [f["name"] for f in FEEDS],
+        "rss_articles_inserted":        total_inserted,
+        "rss_articles_filtered":        total_skipped,
+        "errors":                       errors,
     }
     runs_col.insert_one(run_record)
 
     print(
-        f"\n[{run_id}] Done — {total_inserted} articles inserted. "
+        f"\n[{run_id}] Done — {total_inserted} articles inserted, "
+        f"{total_skipped} filtered as irrelevant. "
         f"Status: {run_record['status']}"
     )
 
@@ -207,6 +235,7 @@ def ingest_rss() -> dict:
         "task":     "rss",
         "run_id":   run_id,
         "inserted": total_inserted,
+        "filtered": total_skipped,
         "errors":   errors,
         "status":   task_status,
     }
