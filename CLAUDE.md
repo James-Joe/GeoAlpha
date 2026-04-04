@@ -248,6 +248,24 @@ Container shipping rates
 Inflation expectations
 ```
 
+### OpenClaw Conversational Dashboard
+A terminal AI interface (OpenClaw) pointed at GeoAlpha's MongoDB collections,
+allowing natural language queries against pipeline output without writing
+one-off scripts.
+
+**Example queries:**
+- "How many gdelt_articles were ingested yesterday?"
+- "Show me the tone trend for 'Strait of Hormuz' over the last 7 days"
+- "Which RSS articles had the most negative sentiment this week?"
+
+**Security model:**
+- Dedicated read-only MongoDB Atlas user scoped to the GeoAlpha database
+- Separate connection string env var (never reuse main `MONGODB_URI`)
+- Dedicated Anthropic API key with a monthly spend cap
+- Run from the GeoAlpha directory so CLAUDE.md provides schema context automatically
+
+**Status:** Not yet set up — review OpenClaw's security model before proceeding.
+
 ---
 
 ## Out of Scope for Now

@@ -50,7 +50,7 @@ KEYWORDS = [
 ]
 
 # GDELT lookback window (days)
-LOOKBACK_DAYS = 7
+LOOKBACK_DAYS = 1
 
 # Seconds to wait between keyword requests (GDELT enforces a per-minute rate limit)
 REQUEST_DELAY_SECONDS = 15

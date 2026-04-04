@@ -36,7 +36,7 @@ TICKERS = [
 ]
 
 # How many calendar days of history to pull on each run
-LOOKBACK_DAYS = 7
+LOOKBACK_DAYS = 1
 
 
 # ---------------------------------------------------------------------------
