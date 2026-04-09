@@ -155,10 +155,14 @@ def build_tone_document(row: dict, keyword: str, run_id: str) -> dict:
     if raw_dt.tzinfo is None:
         raw_dt = raw_dt.replace(tzinfo=timezone.utc)
 
+    # Truncate to midnight UTC so each calendar day maps to exactly one document
+    # regardless of which 15-minute GDELT update interval the timestamp came from
+    date_only = datetime(raw_dt.year, raw_dt.month, raw_dt.day, tzinfo=timezone.utc)
+
     return {
         "source":          "gdelt_tone",
         "query_keyword":   keyword,
-        "date":            raw_dt,
+        "date":            date_only,
         "tone_score":      float(row["Average Tone"]),
         "ingested_at":     datetime.now(timezone.utc),
         "pipeline_run_id": run_id,
@@ -308,17 +312,32 @@ def ingest_gdelt() -> dict:
         for row in raw_tone_rows:
             doc = build_tone_document(row, keyword, run_id)
 
-            # Deduplication: skip if this (keyword, date) pair already exists
-            if tone_col.find_one(
-                {"query_keyword": keyword, "date": doc["date"]}, {"_id": 1}
-            ):
-                continue
+            # If a document already exists for this (keyword, date), average the
+            # tone scores so multiple 15-minute GDELT updates collapse into one
+            # daily value rather than being silently dropped or overwritten.
+            existing = tone_col.find_one(
+                {"query_keyword": keyword, "date": doc["date"]}, {"tone_score": 1}
+            )
+            if existing:
+                tone_score = (existing["tone_score"] + doc["tone_score"]) / 2
+            else:
+                tone_score = doc["tone_score"]
 
             try:
-                tone_col.insert_one(doc)
+                tone_col.update_one(
+                    {"query_keyword": keyword, "date": doc["date"]},
+                    {"$set": {
+                        "query_keyword":   doc["query_keyword"],
+                        "date":            doc["date"],
+                        "tone_score":      tone_score,
+                        "ingested_at":     doc["ingested_at"],
+                        "pipeline_run_id": doc["pipeline_run_id"],
+                    }},
+                    upsert=True,
+                )
                 tone_inserted_count += 1
             except Exception as exc:
-                msg = f"Tone insert failed for '{keyword}' on {doc['date']}: {exc}"
+                msg = f"Tone upsert failed for '{keyword}' on {doc['date']}: {exc}"
                 print(f"  ERROR: {msg}")
                 errors.append(msg)
 
