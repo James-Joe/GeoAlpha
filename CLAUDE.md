@@ -141,29 +141,28 @@ TICKERS = [
 ---
 
 ## Prefect Deployment
-- Flow: `geoalpha_daily_ingestion` in `pipeline.py`
+- Flow: `geoalpha_weekly_ingestion` in `pipeline.py`
 - All four collectors run in parallel via `.submit()` and `wait()`
 - Each task has `retries=2`, `retry_delay_seconds=30`
-- Schedule: `0 6 * * *` (6am UTC daily)
+- Schedule: `0 6 * * 1` (6am UTC every Monday)
 - Credentials stored as Prefect Secret blocks, not in .env
 
 **Useful commands:**
 ```bash
-# Deploy
-uvx prefect-cloud deploy pipeline.py:geoalpha_daily_ingestion \
-    --from James-Joe/GeoAlpha \
-    --name geoalpha-daily \
-    --with-requirements requirements.txt \
-    --secret MONGODB_URI=your_connection_string
+# Deploy (single line — backslash continuations break on paste)
+uvx prefect-cloud deploy pipeline.py:geoalpha_weekly_ingestion --from James-Joe/GeoAlpha --name geoalpha-weekly --with-requirements requirements.txt --secret MONGODB_URI=your_connection_string
 
-# Schedule
-uvx prefect-cloud schedule geoalpha_daily_ingestion/geoalpha-daily "0 6 * * *"
+# Schedule (Monday 6am UTC)
+uvx prefect-cloud schedule geoalpha_weekly_ingestion/geoalpha-weekly "0 6 * * 1"
 
 # Run manually
-uvx prefect-cloud run geoalpha_daily_ingestion/geoalpha-daily
+uvx prefect-cloud run geoalpha_weekly_ingestion/geoalpha-weekly
 
 # Remove schedule
-uvx prefect-cloud unschedule geoalpha_daily_ingestion/geoalpha-daily
+uvx prefect-cloud unschedule geoalpha_weekly_ingestion/geoalpha-weekly
+
+# Delete a deployment
+uvx prefect-cloud delete geoalpha_weekly_ingestion/geoalpha-weekly
 ```
 
 ---

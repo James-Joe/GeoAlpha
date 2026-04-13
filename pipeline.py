@@ -1,13 +1,13 @@
 """
 pipeline.py
 
-Main Prefect orchestration flow for the GeoAlpha daily ingestion pipeline.
+Main Prefect orchestration flow for the GeoAlpha weekly ingestion pipeline.
 Wraps the three ingestion scripts as parallel Prefect tasks and writes a
 consolidated summary to the pipeline_runs MongoDB collection once all tasks
 have completed.
 
-Deployment entrypoint: pipeline.py:geoalpha_daily_ingestion
-Schedule: 06:00 UTC daily (configured in Prefect Cloud)
+Deployment entrypoint: pipeline.py:geoalpha_weekly_ingestion
+Schedule: 06:00 UTC every Monday (configured in Prefect Cloud)
 
 Credentials:
     MONGODB_URI is injected at runtime via a Prefect Secret block — it is
@@ -79,10 +79,10 @@ def run_shipping_task() -> dict:
 # Flow
 # ---------------------------------------------------------------------------
 
-@flow(name="geoalpha_daily_ingestion")
-def geoalpha_daily_ingestion() -> None:
+@flow(name="geoalpha_weekly_ingestion")
+def geoalpha_weekly_ingestion() -> None:
     """
-    Daily GeoAlpha ingestion flow.
+    Weekly GeoAlpha ingestion flow.
 
     Submits all three ingestion tasks in parallel (they share no dependencies),
     waits for all to finish, then writes a consolidated summary record to the
@@ -99,7 +99,7 @@ def geoalpha_daily_ingestion() -> None:
     flow_run_id = datetime.now(timezone.utc).strftime("run_%Y%m%d_%H%M%S")
     started_at  = datetime.now(timezone.utc)
 
-    logger.info(f"GeoAlpha daily ingestion starting — flow_run_id: {flow_run_id}")
+    logger.info(f"GeoAlpha weekly ingestion starting — flow_run_id: {flow_run_id}")
 
     # Submit all three tasks immediately so they run in parallel
     task_futures = {
@@ -188,4 +188,4 @@ def geoalpha_daily_ingestion() -> None:
 if __name__ == "__main__":
     # Allows the flow to be tested locally: python pipeline.py
     # Ensure MONGODB_URI is set in your .env or shell environment before running.
-    geoalpha_daily_ingestion()
+    geoalpha_weekly_ingestion()

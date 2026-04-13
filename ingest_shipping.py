@@ -35,8 +35,8 @@ TICKERS = [
     {"symbol": "USO",  "name": "US Oil ETF"},
 ]
 
-# How many calendar days of history to pull on each run
-LOOKBACK_DAYS = 1
+# How many calendar days of history to pull on each run — matches weekly pipeline cadence
+LOOKBACK_DAYS = 7
 
 
 # ---------------------------------------------------------------------------

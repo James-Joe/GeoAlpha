@@ -49,8 +49,8 @@ KEYWORDS = [
     "Iran missile",
 ]
 
-# GDELT lookback window (days)
-LOOKBACK_DAYS = 1
+# GDELT lookback window (days) — matches weekly pipeline cadence
+LOOKBACK_DAYS = 7
 
 # Seconds to wait between keyword requests (GDELT enforces a per-minute rate limit)
 REQUEST_DELAY_SECONDS = 15
